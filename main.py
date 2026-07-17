@@ -318,9 +318,17 @@ def analyze_eligibility_bulk(notices_to_analyze):
         # 사용 가능한 폴백 모델 목록 순서대로 정의
         candidate_models = [
             'gemini-2.0-flash',
+            'gemini-2.0-flash-001',
             'gemini-flash-latest',
             'gemini-3.5-flash',
-            'gemini-2.5-flash'
+            'gemini-3.1-flash-lite',
+            'gemini-2.0-flash-lite',
+            'gemini-2.0-flash-lite-001',
+            'gemini-3-flash-preview',
+            'gemini-pro-latest',
+            'gemini-2.5-pro',
+            'gemini-3-pro-preview',
+            'gemini-3.1-pro-preview'
         ]
         
         last_exception = None
