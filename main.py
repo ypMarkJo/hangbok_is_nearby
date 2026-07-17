@@ -263,41 +263,57 @@ def parse_application_start_dates(pblanc_id):
         
     return start_dates
 
-def analyze_eligibility(pblanc_id, atch_file_id, pblanc_nm):
-    """Gemini를 이용해 공고문 PDF 분석 및 자격 심사 진행 (429 한도 초과 시 모델 자동 폴백 지원)"""
-    if not atch_file_id:
-        return {"eligible": "Unsure", "reason": "공고문 PDF 파일 ID가 존재하지 않아 수동 확인이 필요합니다."}
+def analyze_eligibility_bulk(notices_to_analyze):
+    """
+    여러 개의 공고문을 한 번의 Gemini API 호출로 묶어서 벌크 분석 진행 (API 요청 횟수 최소화)
+    notices_to_analyze: [(pblanc_nm, pdf_bytes, pblanc_id, suply_ty_nm), ...]
+    """
+    if not notices_to_analyze:
+        return []
         
-    pdf_url = f"https://www.myhome.go.kr/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
     try:
-        # 1. PDF 다운로드
-        print(f"[{pblanc_nm}] PDF 공고문 다운로드 중...")
-        response = requests.get(pdf_url, headers=headers, timeout=30)
-        if response.status_code != 200 or not response.content.startswith(b"%PDF"):
-            return {"eligible": "Unsure", "reason": "공고문 PDF 다운로드에 실패했거나 올바른 PDF 형식이 아닙니다."}
+        # 1. 콘텐츠 리스트 구성 (PDF 바이트들을 인라인 데이터로 순서대로 추가)
+        contents = []
+        for pblanc_nm, pdf_bytes, pblanc_id, _ in notices_to_analyze:
+            contents.append({
+                'mime_type': 'application/pdf',
+                'data': pdf_bytes
+            })
             
-        pdf_bytes = response.content
+        # 각 PDF 인덱스를 식별하기 위한 매핑 목록 문자열 생성
+        notices_index_str = "\n".join([
+            f"[{idx+1}] {item[0]} (ID: {item[2]})"
+            for idx, item in enumerate(notices_to_analyze)
+        ])
         
-        # 2. 모델 프롬프트 설정
+        # 2. 벌크 전송용 단일 통합 프롬프트 작성
         prompt = f"""
         당신은 대한민국 공공임대주택 자격 요건 분석 전문가입니다.
-        제공된 청약 모집공고문 PDF 파일과 아래의 '신청자 정보'를 면밀히 비교하여 신청 가능 여부를 평가해 주세요.
+        제공된 {len(notices_to_analyze)}개의 청약 모집공고문 PDF 파일들(순서대로 전달됨)과 아래의 '신청자 정보'를 면밀히 비교하여 각 공고별 신청 가능 여부를 평가해 주세요.
 
         [신청자 정보]
         {USER_PROFILE}
 
-        [요구 조건 및 출력 형식]
-        반드시 다음 JSON 형식으로 답변을 제공해 주세요. 다른 텍스트는 포함하지 마십시오.
-        {{
+        [분석 대상 공고 목록 (순서 매칭)]
+        {notices_index_str}
+
+        [요구 조건]
+        - 전달된 PDF 파일들의 순서와 위의 공고 목록의 순서가 [1]부터 1:1로 정확하게 대응됩니다.
+        - 각 공고에 대해 나이(만 33세), 미혼 여부, 거주지(광명) 및 직장(용산), 소득 요건(연 5,000만 원, 월평균 약 416만 원)을 공고문 내용과 세부적으로 비교하십시오.
+
+        [출력 형식]
+        반드시 다음 구조의 JSON 리스트 형식으로만 답변을 제공해 주세요. 다른 설명이나 텍스트는 포함하지 마십시오.
+        [
+          {{
+            "title": "공고명",
             "eligible": "Yes" 또는 "No" 또는 "Unsure",
             "housing_type": "행복주택/국민임대/청년안심주택 등 파악된 주택 유형",
-            "reason": "신청 가능 여부에 대한 구체적인 근거 설명 (나이, 미혼 여부, 거주지/직장, 소득 기준을 각각 대조한 결과 포함)"
-        }}
+            "reason": "신청 가능 여부에 대한 구체적인 분석 사유 (한국어로 서술. 요건 매치 또는 자격 미달 사유 구체적 서술)"
+          }},
+          ...
+        ]
         """
+        contents.append(prompt)
         
         # 사용 가능한 폴백 모델 목록 순서대로 정의
         candidate_models = [
@@ -311,23 +327,16 @@ def analyze_eligibility(pblanc_id, atch_file_id, pblanc_nm):
         
         for model_name in candidate_models:
             try:
-                print(f"[{pblanc_nm}] {model_name} 모델로 분석 시도 중...")
+                print(f"\n총 {len(notices_to_analyze)}건의 공고에 대해 {model_name} 모델로 통합 분석 시도 중...")
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(
-                    [
-                        {
-                            'mime_type': 'application/pdf',
-                            'data': pdf_bytes
-                        },
-                        prompt
-                    ],
+                    contents,
                     generation_config={"response_mime_type": "application/json"}
                 )
                 
                 # 3. 결과 파싱 (마크다운 코드 블록 펜스가 포함되어 있을 경우 정제)
                 raw_text = response.text.strip()
                 if raw_text.startswith("```"):
-                    # 첫 번째 줄 바꿈 찾기
                     first_newline = raw_text.find("\n")
                     if first_newline != -1:
                         raw_text = raw_text[first_newline:].strip()
@@ -335,22 +344,30 @@ def analyze_eligibility(pblanc_id, atch_file_id, pblanc_nm):
                         raw_text = raw_text[:-3].strip()
                         
                 result = json.loads(raw_text)
-                print(f"[{pblanc_nm}] {model_name} 모델 분석 성공!")
+                print(f"[{model_name}] 모델 통합 벌크 분석 성공!")
                 return result
                 
             except Exception as e:
                 err_str = str(e)
-                print(f"[{pblanc_nm}] {model_name} 분석 오류: {err_str[:120]}")
+                print(f"{model_name} 분석 오류: {err_str[:120]}")
                 last_exception = e
-                # 429 한도 초과 또는 404 모델 미지원 등의 에러 발생 시 다음 모델로 폴백
+                # 429 등의 에러 발생 시 다음 후보 모델로 폴백
                 continue
                 
-        # 모든 모델 시도가 실패한 경우 예외 발생
-        raise last_exception if last_exception else Exception("모든 후보 모델의 호출에 실패했습니다.")
+        raise last_exception if last_exception else Exception("모든 후보 모델의 통합 호출에 실패했습니다.")
         
     except Exception as e:
-        print(f"Gemini 최종 분석 실패: {e}")
-        return {"eligible": "Unsure", "reason": f"모든 분석 모델의 한도 초과 또는 에러로 분석 실패. (최종 에러 내용: {e})"}
+        print(f"Gemini 벌크 분석 최종 실패: {e}")
+        # 전체 실패 시 수동 확인을 위한 기본 구조 목록 반환
+        fallback_results = []
+        for pblanc_nm, _, pblanc_id, suply_ty_nm in notices_to_analyze:
+            fallback_results.append({
+                "title": pblanc_nm,
+                "eligible": "Unsure",
+                "housing_type": suply_ty_nm,
+                "reason": f"통합 분석 중 쿼터 초과 또는 API 오류 발생으로 수동 확인이 필요합니다. (최종 에러 내용: {e})"
+            })
+        return fallback_results
 
 def fetch_recent_notices(target_date):
     """최근 신규 공고 목록 조회 (공고일이 target_date 기준 25일 이내인 것들만 동적 수집)"""
@@ -452,6 +469,9 @@ def main():
     # 중복 분석 방지용 ID 셋
     processed_ids = set()
     
+    # 벌크 분석을 위해 오늘 대기 중인 PDF 데이터를 저장할 목록
+    notices_to_analyze = []
+    
     for notice in notices:
         pblanc_id = str(notice.get("pblancId"))
         pblanc_nm = notice.get("pblancNm", "")
@@ -490,50 +510,115 @@ def main():
         checked_count += 1
         print(f"\n★ 오늘 접수 시작 공고 발견: {pblanc_nm} (ID: {pblanc_id})")
         
-        # 4. LLM 2차 필터링 (자격 심사)
-        if mock_mode:
-            # 테스트를 위해 Gemini 호출을 우회하고 시나리오에 맞는 모의 응답 생성
-            housing_type = notice.get("suplyTyNm", "임대주택")
-            if "성남" in pblanc_nm:
-                eligible_status = "No"
-                reason = "신청인의 연 소득(5,000만 원, 월평균 약 416만 원)이 국민임대주택 1인 가구 소득 기준(월평균 소득 70% 이하: 약 280만 원) 또는 영구임대/고령자복지주택 대상 자격을 초과하여 제외되었습니다."
-                housing_type = "국민임대/영구임대"
-            elif "관악봉천" in pblanc_nm:
-                eligible_status = "Yes"
-                reason = "신청인의 조건(나이 만 33세 청년, 미혼, 서울/경기 생활권, 1인 가구 소득 기준 약 457만 원 이하)이 본 공고의 청년 행복주택 지원 요건에 완벽하게 부합합니다."
-                housing_type = "행복주택"
-            else:
-                eligible_status = "No"
-                reason = "공고의 신청 자격 요건(나이, 거주지역, 소득 조건 등) 중 일부가 신청인의 프로필 요건을 충족하지 못해 부적합합니다."
-            
-            # 딜레이 시뮬레이션
-            time.sleep(0.5)
-        else:
-            atch_file_id = notice.get("atchFileId")
-            analysis = analyze_eligibility(pblanc_id, atch_file_id, pblanc_nm)
-            
-            # API 레이트 리밋(RPM/TPM) 방지를 위한 대기 시간 추가
-            time.sleep(3)
-            
-            eligible_status = analysis.get("eligible", "Unsure")
-            reason = analysis.get("reason", "분석 실패")
-            housing_type = analysis.get("housing_type", notice.get("suplyTyNm", "임대주택"))
+        # 공고문 정보 파악
+        suply_ty_nm = notice.get("suplyTyNm", "임대주택")
+        atch_file_id = notice.get("atchFileId")
         
-        detail_link = f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"
-        
-        notice_info = {
-            "title": pblanc_nm,
-            "housing_type": housing_type,
-            "link": detail_link,
-            "eligible": eligible_status,
-            "reason": reason
+        if not atch_file_id:
+            # 첨부파일이 없으면 수동 확인을 위한 대기 리스트에 Unsure 상태로 추가
+            eligible_list.append({
+                "title": pblanc_nm,
+                "housing_type": suply_ty_nm,
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "eligible": "Unsure",
+                "reason": "공고문 PDF 파일 ID가 존재하지 않아 수동 확인이 필요합니다."
+            })
+            continue
+            
+        # PDF 다운로드 진행
+        pdf_url = f"https://www.myhome.go.kr/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-        if eligible_status in ["Yes", "Unsure"]:
-            eligible_list.append(notice_info)
+        try:
+            print(f"[{pblanc_nm}] PDF 공고문 다운로드 중...")
+            response = requests.get(pdf_url, headers=headers, timeout=30)
+            if response.status_code != 200 or not response.content.startswith(b"%PDF"):
+                eligible_list.append({
+                    "title": pblanc_nm,
+                    "housing_type": suply_ty_nm,
+                    "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                    "eligible": "Unsure",
+                    "reason": "공고문 PDF 다운로드에 실패했거나 올바른 PDF 형식이 아닙니다."
+                })
+            else:
+                # 다운로드 성공 시 분석 대기 대열에 추가
+                notices_to_analyze.append((pblanc_nm, response.content, pblanc_id, suply_ty_nm))
+        except Exception as e:
+            eligible_list.append({
+                "title": pblanc_nm,
+                "housing_type": suply_ty_nm,
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "eligible": "Unsure",
+                "reason": f"PDF 다운로드 오류 발생: {e}"
+            })
+
+    # 4. 벌크 분석 진행 (모아놓은 공고문이 있다면 단 1번 호출하여 분석)
+    if notices_to_analyze:
+        bulk_results = []
+        if mock_mode:
+            print(f"\n💡 [Mock 모드] {len(notices_to_analyze)}건의 공고 모의 분석 데이터 생성 중...")
+            for idx, item in enumerate(notices_to_analyze):
+                pblanc_nm, _, pblanc_id, suply_ty_nm = item
+                if "성남" in pblanc_nm:
+                    bulk_results.append({
+                        "title": pblanc_nm,
+                        "eligible": "No",
+                        "housing_type": "국민임대/영구임대",
+                        "reason": "신청인의 연 소득(5,000만 원, 월평균 약 416만 원)이 국민임대주택 1인 가구 소득 기준(월평균 소득 70% 이하: 약 280만 원) 또는 영구임대/고령자복지주택 대상 자격을 초과하여 제외되었습니다."
+                    })
+                elif "관악봉천" in pblanc_nm:
+                    bulk_results.append({
+                        "title": pblanc_nm,
+                        "eligible": "Yes",
+                        "housing_type": "행복주택",
+                        "reason": "신청인의 조건(나이 만 33세 청년, 미혼, 서울/경기 생활권, 1인 가구 소득 기준 약 457만 원 이하)이 본 공고의 청년 행복주택 지원 요건에 완벽하게 부합합니다."
+                    })
+                else:
+                    bulk_results.append({
+                        "title": pblanc_nm,
+                        "eligible": "No",
+                        "housing_type": suply_ty_nm,
+                        "reason": "공고의 신청 자격 요건(나이, 거주지역, 소득 조건 등) 중 일부가 신청인의 프로필 요건을 충족하지 못해 부적합합니다."
+                    })
+            time.sleep(0.5)
         else:
-            ineligible_list.append(notice_info)
+            bulk_results = analyze_eligibility_bulk(notices_to_analyze)
             
+        # 벌크 결과 매핑 및 목록 분류
+        for idx, notice_item in enumerate(notices_to_analyze):
+            pblanc_nm, _, pblanc_id, suply_ty_nm = notice_item
+            
+            # 기본 폴백값 정의
+            item_result = {
+                "title": pblanc_nm,
+                "housing_type": suply_ty_nm,
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "eligible": "Unsure",
+                "reason": "벌크 분석 결과 매칭 오류"
+            }
+            
+            # 매칭 결과 탐색 (인덱스 우선 매칭 후 제목 매칭 지원)
+            matched_data = None
+            if idx < len(bulk_results):
+                matched_data = bulk_results[idx]
+            else:
+                for res in bulk_results:
+                     if res.get("title") and pblanc_nm in res.get("title"):
+                         matched_data = res
+                         break
+                         
+            if matched_data:
+                item_result["eligible"] = matched_data.get("eligible", "Unsure")
+                item_result["reason"] = matched_data.get("reason", "분석 사유 누락")
+                item_result["housing_type"] = matched_data.get("housing_type", suply_ty_nm)
+                
+            if item_result["eligible"] in ["Yes", "Unsure"]:
+                eligible_list.append(item_result)
+            else:
+                ineligible_list.append(item_result)
+                
     # 5. 최종 알림 구성 및 발송
     pdf_report_path = None
     
