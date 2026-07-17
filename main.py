@@ -297,9 +297,15 @@ def analyze_eligibility_bulk(notices_to_analyze):
         [분석 대상 공고 목록 (순서 매칭)]
         {notices_index_str}
 
-        [요구 조건]
-        - 전달된 PDF 파일들의 순서와 위의 공고 목록의 순서가 [1]부터 1:1로 정확하게 대응됩니다.
-        - 각 공고에 대해 나이(만 33세), 미혼 여부, 거주지(광명) 및 직장(용산), 소득 요건(연 5,000만 원, 월평균 약 416만 원)을 공고문 내용과 세부적으로 비교하십시오.
+        [요구 조건 및 심사 지침 (중요)]
+        1. **자격 요건 (Hard Rules - 필수 자격)**
+           - 나이(만 33세), 무주택 여부, 미혼 요건, 자산 기준, 소득 한도 기준은 신청 가능 여부를 결정하는 필수 자격 요건(Hard Rules)입니다.
+           - 이 필수 자격 조건 중 하나라도 탈락(예: 1인 가구 소득 한도를 명백히 초과하거나 나이 제한을 넘어섬)하는 경우에만 `"eligible": "No"`로 판정하십시오.
+        
+        2. **순위 요건 (Soft Rules - 거주지/직장 위치에 따른 우선순위)**
+           - 해당 주택이 건설되는 시/군에 거주하지 않더라도(예: 성남시 공고인데 신청자는 광명시 거주/용산구 직장인인 경우), 대한민국 수도권 거주자 자격으로 **2순위 또는 3순위 등으로 신청이 가능하다면 절대 `"eligible": "No"`로 판정하지 마십시오.**
+           - 1순위 조건에 부합하지 않더라도 2순위, 3순위로 청약 접수 자체가 가능한 경우 `"eligible": "Yes"`로 판정하고, 설명란(reason)에 "1순위 지역 요건은 미달하나, 수도권 거주자 자격으로 3순위 신청이 가능합니다."라고 상세히 명시해 주십시오.
+           - 거주지나 직장 위치가 공고의 우선순위 지역과 맞지 않다는 이유만으로 신청이 불가능한 것으로 분류하지 않도록 각별히 유의하십시오.
 
         [출력 형식]
         반드시 다음 구조의 JSON 리스트 형식으로만 답변을 제공해 주세요. 다른 설명이나 텍스트는 포함하지 마십시오.
@@ -308,7 +314,7 @@ def analyze_eligibility_bulk(notices_to_analyze):
             "title": "공고명",
             "eligible": "Yes" 또는 "No" 또는 "Unsure",
             "housing_type": "행복주택/국민임대/청년안심주택 등 파악된 주택 유형",
-            "reason": "신청 가능 여부에 대한 구체적인 분석 사유 (한국어로 서술. 요건 매치 또는 자격 미달 사유 구체적 서술)"
+            "reason": "신청 가능 여부에 대한 구체적인 분석 사유 (한국어로 서술. 필수 자격 요건 대조 결과 및 순위/우선순위 대조 결과 포함)"
           }},
           ...
         ]
@@ -317,18 +323,21 @@ def analyze_eligibility_bulk(notices_to_analyze):
         
         # 사용 가능한 폴백 모델 목록 순서대로 정의
         candidate_models = [
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-001',
-            'gemini-flash-latest',
+            # 1. 최상위 추론 성능 Pro 계열 (최신 순서)
+            'gemini-3.1-pro-preview',
+            'gemini-3-pro-preview',
+            'gemini-2.5-pro',
+            'gemini-pro-latest',
+            
+            # 2. 보급형 Flash & Lite 계열 (최신 순서)
             'gemini-3.5-flash',
             'gemini-3.1-flash-lite',
+            'gemini-3-flash-preview',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-001',
             'gemini-2.0-flash-lite',
             'gemini-2.0-flash-lite-001',
-            'gemini-3-flash-preview',
-            'gemini-pro-latest',
-            'gemini-2.5-pro',
-            'gemini-3-pro-preview',
-            'gemini-3.1-pro-preview'
+            'gemini-flash-latest'
         ]
         
         last_exception = None
