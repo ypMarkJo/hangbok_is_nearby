@@ -2,8 +2,8 @@ name: Daily Housing Announcement Alert
 
 on:
   schedule:
-    # 매일 아침 한국 시간(KST) 오전 8시 30분에 실행 (UTC 기준 전날 23:30)
-    - cron: '30 23 * * *'
+    # 매일 아침 한국 시간(KST) 오전 8시 18분에 실행 (UTC 기준 전날 23:18)
+    - cron: '18 23 * * *'
   workflow_dispatch: # 수동 실행 지원
 
 jobs:
