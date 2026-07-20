@@ -9,9 +9,6 @@ import html
 import time
 from bs4 import BeautifulSoup
 import google.generativeai as genai
-from requests.adapters import HTTPAdapter
-from requests.exceptions import RequestException
-from urllib3.util.retry import Retry
 
 # ReportLab PDF 생성 모듈 추가
 from reportlab.lib.pagesizes import letter
@@ -69,71 +66,6 @@ def load_env():
                     os.environ[key.strip()] = val.strip().strip("'\"")
 
 load_env()
-
-def get_env_int(name, default, min_value=0):
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    try:
-        parsed = int(value)
-        if parsed < min_value:
-            raise ValueError
-        return parsed
-    except ValueError:
-        print(f"경고: {name} 값({value})이 올바르지 않아 기본값({default})을 사용합니다.")
-        return default
-
-def get_env_float(name, default, min_value=0.0):
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    try:
-        parsed = float(value)
-        if parsed < min_value:
-            raise ValueError
-        return parsed
-    except ValueError:
-        print(f"경고: {name} 값({value})이 올바르지 않아 기본값({default})을 사용합니다.")
-        return default
-
-MYHOME_CONNECT_TIMEOUT = get_env_float("MYHOME_CONNECT_TIMEOUT", 10.0, min_value=1.0)
-MYHOME_READ_TIMEOUT = get_env_float("MYHOME_READ_TIMEOUT", 30.0, min_value=1.0)
-MYHOME_MAX_RETRIES = get_env_int("MYHOME_MAX_RETRIES", 3, min_value=0)
-MYHOME_PAGE_RETRY_ATTEMPTS = get_env_int("MYHOME_PAGE_RETRY_ATTEMPTS", 3, min_value=1)
-MYHOME_RETRY_BACKOFF_SECONDS = get_env_float("MYHOME_RETRY_BACKOFF_SECONDS", 1.5, min_value=0.0)
-MYHOME_BASE_URL = os.environ.get("MYHOME_BASE_URL", "https://www.myhome.go.kr").rstrip("/")
-MYHOME_PROXY_URL = os.environ.get("MYHOME_PROXY_URL", "").strip()
-
-def create_retry_session(max_retries):
-    retry_strategy = Retry(
-        total=max_retries,
-        connect=max_retries,
-        read=max_retries,
-        status=max_retries,
-        allowed_methods=frozenset(["GET", "POST"]),
-        status_forcelist=[429, 500, 502, 503, 504],
-        backoff_factor=0.8,
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session = requests.Session()
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    if MYHOME_PROXY_URL:
-        session.proxies.update({
-            "http": MYHOME_PROXY_URL,
-            "https": MYHOME_PROXY_URL,
-        })
-        print("MYHOME 프록시 경유 모드가 활성화되었습니다.")
-    return session
-
-MYHOME_SESSION = create_retry_session(MYHOME_MAX_RETRIES)
-
-def build_myhome_url(path):
-    return f"{MYHOME_BASE_URL}{path}"
-
-NOTICE_VIEW_PATH = "/hws/portal/sch/selectRsdtRcritNtcView.do"
-NOTICE_LIST_PATH = "/hws/portal/sch/selectRsdtRcritNtcList.do"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -292,18 +224,14 @@ def generate_ineligible_pdf(ineligible_list, today_str, pdf_path):
 
 def parse_application_start_dates(pblanc_id):
     """상세 페이지에서 접수 일정 시작일을 추출"""
-    detail_url = build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}")
+    detail_url = f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     start_dates = []
     try:
-        response = MYHOME_SESSION.get(
-            detail_url,
-            headers=headers,
-            timeout=(MYHOME_CONNECT_TIMEOUT, MYHOME_READ_TIMEOUT),
-        )
+        response = requests.get(detail_url, headers=headers, timeout=10)
         if response.status_code != 200:
             return start_dates
             
@@ -460,11 +388,10 @@ def analyze_eligibility_bulk(notices_to_analyze):
 
 def fetch_recent_notices(target_date):
     """최근 신규 공고 목록 조회 (공고일이 target_date 기준 25일 이내인 것들만 동적 수집)"""
-    view_url = build_myhome_url(NOTICE_VIEW_PATH)
-    list_url = build_myhome_url(NOTICE_LIST_PATH)
+    list_url = "https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcList.do"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": view_url,
+        "Referer": "https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest"
     }
@@ -473,20 +400,8 @@ def fetch_recent_notices(target_date):
     cutoff_date = target_date - datetime.timedelta(days=25)
     
     all_notices = []
-    warnings = []
     page = 1
     max_pages = 80 # 무한 루프 방지용 안전 상한선
-
-    # 최신 구조 기준 View 페이지를 먼저 열어 세션/쿠키를 확보한다.
-    try:
-        preflight_response = MYHOME_SESSION.get(
-            view_url,
-            headers={"User-Agent": headers["User-Agent"]},
-            timeout=(MYHOME_CONNECT_TIMEOUT, MYHOME_READ_TIMEOUT),
-        )
-        preflight_response.raise_for_status()
-    except RequestException as e:
-        warnings.append(f"View 선접속 실패: {e}")
     
     while page <= max_pages:
         data = {
@@ -503,60 +418,35 @@ def fetch_recent_notices(target_date):
             "srchRcritPblancDeYearMtEnd": "",
         }
         
-        page_loaded = False
-        for attempt in range(1, MYHOME_PAGE_RETRY_ATTEMPTS + 1):
-            try:
-                print(f"공고 목록 가져오는 중... (페이지 {page}, 시도 {attempt}/{MYHOME_PAGE_RETRY_ATTEMPTS})")
-                response = MYHOME_SESSION.post(
-                    list_url,
-                    headers=headers,
-                    data=data,
-                    timeout=(MYHOME_CONNECT_TIMEOUT, MYHOME_READ_TIMEOUT),
-                )
-                response.raise_for_status()
-
+        try:
+            print(f"공고 목록 가져오는 중... (페이지 {page})")
+            response = requests.post(list_url, headers=headers, data=data, timeout=10)
+            if response.status_code == 200:
                 json_data = response.json()
                 items = json_data.get('resultList', [])
                 if not items:
-                    page_loaded = True
                     break
-
                 all_notices.extend(items)
-                page_loaded = True
-
+                
                 # 마지막 아이템 공고일 분석 후 컷오프일보다 과거이면 중단
                 last_item_date_str = items[-1].get('rcritPblancDe')
-                if last_item_date_str:
-                    try:
-                        last_item_date = datetime.datetime.strptime(last_item_date_str, "%Y%m%d").date()
-                        if last_item_date < cutoff_date:
-                            print(f"공고 수집 중단: 페이지 {page}의 마지막 공고일({last_item_date})이 컷오프일({cutoff_date})보다 오래되었습니다.")
-                            return all_notices, warnings
-                    except ValueError as e:
-                        print(f"날짜 분석 파싱 에러: {e}")
-                break
-            except ValueError as e:
-                error_message = f"페이지 {page} 응답 JSON 파싱 실패: {e}"
-            except RequestException as e:
-                error_message = f"페이지 {page} 요청 오류: {e}"
-
-            if attempt < MYHOME_PAGE_RETRY_ATTEMPTS:
-                backoff = MYHOME_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                print(f"{error_message} → {backoff:.1f}초 후 재시도")
-                time.sleep(backoff)
+                try:
+                    last_item_date = datetime.datetime.strptime(last_item_date_str, "%Y%m%d").date()
+                    if last_item_date < cutoff_date:
+                        print(f"공고 수집 중단: 페이지 {page}의 마지막 공고일({last_item_date})이 컷오프일({cutoff_date})보다 오래되었습니다.")
+                        break
+                except Exception as e:
+                    print(f"날짜 분석 파싱 에러: {e}")
             else:
-                warnings.append(error_message)
-                print(f"목록 요청 최종 실패: {error_message}")
-        
-        if not page_loaded:
+                print(f"페이지 {page} 가져오기 실패: {response.status_code}")
                 break
-
-        if page_loaded and not items:
+        except Exception as e:
+            print(f"목록 요청 예외 발생: {e}")
             break
             
         page += 1
             
-    return all_notices, warnings
+    return all_notices
 
 def main():
     # 한국 시간(KST, UTC+9) 기준으로 오늘 날짜 정의
@@ -586,11 +476,8 @@ def main():
     target_date = datetime.datetime.strptime(today_str, "%Y-%m-%d").date()
     
     # 1. 최근 공고 조회 (target_date 전달)
-    notices, fetch_warnings = fetch_recent_notices(target_date)
+    notices = fetch_recent_notices(target_date)
     print(f"총 {len(notices)}개의 공고 확보.")
-    if fetch_warnings:
-        for warning in fetch_warnings:
-            print(f"수집 경고: {warning}")
     
     eligible_list = []
     ineligible_list = []
@@ -649,30 +536,26 @@ def main():
             eligible_list.append({
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
                 "eligible": "Unsure",
                 "reason": "공고문 PDF 파일 ID가 존재하지 않아 수동 확인이 필요합니다."
             })
             continue
             
         # PDF 다운로드 진행
-        pdf_url = build_myhome_url(f"/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1")
+        pdf_url = f"https://www.myhome.go.kr/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1"
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
         try:
             print(f"[{pblanc_nm}] PDF 공고문 다운로드 중...")
-            response = MYHOME_SESSION.get(
-                pdf_url,
-                headers=headers,
-                timeout=(MYHOME_CONNECT_TIMEOUT, MYHOME_READ_TIMEOUT),
-            )
+            response = requests.get(pdf_url, headers=headers, timeout=30)
             if response.status_code != 200 or not response.content.startswith(b"%PDF"):
                 eligible_list.append({
                     "title": pblanc_nm,
                     "housing_type": suply_ty_nm,
-                    "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
+                    "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
                     "eligible": "Unsure",
                     "reason": "공고문 PDF 다운로드에 실패했거나 올바른 PDF 형식이 아닙니다."
                 })
@@ -683,7 +566,7 @@ def main():
             eligible_list.append({
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
                 "eligible": "Unsure",
                 "reason": f"PDF 다운로드 오류 발생: {e}"
             })
@@ -728,7 +611,7 @@ def main():
             item_result = {
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
+                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
                 "eligible": "Unsure",
                 "reason": "벌크 분석 결과 매칭 오류"
             }
@@ -766,22 +649,8 @@ def main():
             print("PDF 보고서 생성 실패:", e)
             pdf_report_path = None
             
-    warning_note = ""
-    if fetch_warnings:
-        warning_items = fetch_warnings[:5]
-        warning_lines = "\n".join(f"• {html.escape(item)}" for item in warning_items)
-        extra_count = len(fetch_warnings) - len(warning_items)
-        extra_line = f"\n• 외 {extra_count}건" if extra_count > 0 else ""
-        warning_note = (
-            f"\n⚠️ <b>목록 수집 경고</b>\n"
-            f"일부 페이지 조회에 실패하여 부분 수집 결과로 분석했습니다.\n"
-            f"{warning_lines}{extra_line}\n"
-        )
-
     if eligible_list:
         message_parts = [f"🔔 <b>[마이홈] 오늘 접수 시작! 맞춤형 임대주택 공고 알림</b>\n\n오늘({today_str}) 자격 충족 가능성이 있는 공고가 접수를 시작합니다.\n"]
-        if warning_note:
-            message_parts.append(warning_note)
         for idx, item in enumerate(eligible_list, 1):
             status_tag = "✅ 신청 가능" if item["eligible"] == "Yes" else "⚠️ 검증 모호 (확인 요망)"
             escaped_title = html.escape(item['title'])
@@ -825,8 +694,6 @@ def main():
                 f"❌ <b>자격 미달 제외 공고</b>: 총 {len(ineligible_list)}건\n"
                 f"※ 상세 제외 사유는 첨부된 PDF 보고서 파일을 확인해 주세요."
             )
-            if warning_note:
-                telegram_message += warning_note
             
             if pdf_report_path and len(telegram_message) <= 1024:
                 send_telegram_document(pdf_report_path, telegram_message)
@@ -835,10 +702,7 @@ def main():
                 if pdf_report_path:
                     send_telegram_document(pdf_report_path, f"❌ {today_str} 자격 미달 제외 공고 상세 사유 보고서")
         else:
-            no_notice_message = f"ℹ️ 오늘({today_str}) 신청 가능한 임대주택 공고는 없습니다."
-            if warning_note:
-                no_notice_message += warning_note
-            send_telegram_message(no_notice_message)
+            send_telegram_message(f"ℹ️ 오늘({today_str}) 신청 가능한 임대주택 공고는 없습니다.")
             
     # 사용 완료한 임시 PDF 파일 삭제
     if pdf_report_path and os.path.exists(pdf_report_path):
