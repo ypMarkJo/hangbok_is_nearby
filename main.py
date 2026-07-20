@@ -101,6 +101,8 @@ MYHOME_READ_TIMEOUT = get_env_float("MYHOME_READ_TIMEOUT", 30.0, min_value=1.0)
 MYHOME_MAX_RETRIES = get_env_int("MYHOME_MAX_RETRIES", 3, min_value=0)
 MYHOME_PAGE_RETRY_ATTEMPTS = get_env_int("MYHOME_PAGE_RETRY_ATTEMPTS", 3, min_value=1)
 MYHOME_RETRY_BACKOFF_SECONDS = get_env_float("MYHOME_RETRY_BACKOFF_SECONDS", 1.5, min_value=0.0)
+MYHOME_BASE_URL = os.environ.get("MYHOME_BASE_URL", "https://www.myhome.go.kr").rstrip("/")
+MYHOME_PROXY_URL = os.environ.get("MYHOME_PROXY_URL", "").strip()
 
 def create_retry_session(max_retries):
     retry_strategy = Retry(
@@ -117,9 +119,21 @@ def create_retry_session(max_retries):
     session = requests.Session()
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    if MYHOME_PROXY_URL:
+        session.proxies.update({
+            "http": MYHOME_PROXY_URL,
+            "https": MYHOME_PROXY_URL,
+        })
+        print("MYHOME 프록시 경유 모드가 활성화되었습니다.")
     return session
 
 MYHOME_SESSION = create_retry_session(MYHOME_MAX_RETRIES)
+
+def build_myhome_url(path):
+    return f"{MYHOME_BASE_URL}{path}"
+
+NOTICE_VIEW_PATH = "/hws/portal/sch/selectRsdtRcritNtcView.do"
+NOTICE_LIST_PATH = "/hws/portal/sch/selectRsdtRcritNtcList.do"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -278,7 +292,7 @@ def generate_ineligible_pdf(ineligible_list, today_str, pdf_path):
 
 def parse_application_start_dates(pblanc_id):
     """상세 페이지에서 접수 일정 시작일을 추출"""
-    detail_url = f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"
+    detail_url = build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}")
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -446,10 +460,11 @@ def analyze_eligibility_bulk(notices_to_analyze):
 
 def fetch_recent_notices(target_date):
     """최근 신규 공고 목록 조회 (공고일이 target_date 기준 25일 이내인 것들만 동적 수집)"""
-    list_url = "https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcList.do"
+    view_url = build_myhome_url(NOTICE_VIEW_PATH)
+    list_url = build_myhome_url(NOTICE_LIST_PATH)
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do",
+        "Referer": view_url,
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest"
     }
@@ -461,6 +476,17 @@ def fetch_recent_notices(target_date):
     warnings = []
     page = 1
     max_pages = 80 # 무한 루프 방지용 안전 상한선
+
+    # 최신 구조 기준 View 페이지를 먼저 열어 세션/쿠키를 확보한다.
+    try:
+        preflight_response = MYHOME_SESSION.get(
+            view_url,
+            headers={"User-Agent": headers["User-Agent"]},
+            timeout=(MYHOME_CONNECT_TIMEOUT, MYHOME_READ_TIMEOUT),
+        )
+        preflight_response.raise_for_status()
+    except RequestException as e:
+        warnings.append(f"View 선접속 실패: {e}")
     
     while page <= max_pages:
         data = {
@@ -623,14 +649,14 @@ def main():
             eligible_list.append({
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
                 "eligible": "Unsure",
                 "reason": "공고문 PDF 파일 ID가 존재하지 않아 수동 확인이 필요합니다."
             })
             continue
             
         # PDF 다운로드 진행
-        pdf_url = f"https://www.myhome.go.kr/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1"
+        pdf_url = build_myhome_url(f"/hws/com/fms/cvplFileDownload.do?atchFileId={atch_file_id}&fileSn=1")
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -646,7 +672,7 @@ def main():
                 eligible_list.append({
                     "title": pblanc_nm,
                     "housing_type": suply_ty_nm,
-                    "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                    "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
                     "eligible": "Unsure",
                     "reason": "공고문 PDF 다운로드에 실패했거나 올바른 PDF 형식이 아닙니다."
                 })
@@ -657,7 +683,7 @@ def main():
             eligible_list.append({
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
                 "eligible": "Unsure",
                 "reason": f"PDF 다운로드 오류 발생: {e}"
             })
@@ -702,7 +728,7 @@ def main():
             item_result = {
                 "title": pblanc_nm,
                 "housing_type": suply_ty_nm,
-                "link": f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}",
+                "link": build_myhome_url(f"/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"),
                 "eligible": "Unsure",
                 "reason": "벌크 분석 결과 매칭 오류"
             }
