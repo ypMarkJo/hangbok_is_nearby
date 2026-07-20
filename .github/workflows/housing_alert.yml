@@ -28,6 +28,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Network probe (myhome)
+        run: |
+          set -x
+          date
+          nslookup www.myhome.go.kr || true
+          curl -vI --connect-timeout 10 --max-time 30 \
+            https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do || true
+          curl -v --connect-timeout 10 --max-time 30 \
+            -H "User-Agent: Mozilla/5.0" \
+            -H "Referer: https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do" \
+            -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+            -H "X-Requested-With: XMLHttpRequest" \
+            --data "pageIndex=1&searchTyId=&srchSuplyTy=&srchHouseTy=&srchSuplyPrvuseAr=&srchBassMtRntchrg=&srchPrgrStts=1&lfstsTyAt=&srchPblancNm=&srchRcritPblancDeYearMtBegin=&srchRcritPblancDeYearMtEnd=" \
+            https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcList.do || true
+
       - name: Run Alert Service
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
