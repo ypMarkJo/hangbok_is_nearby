@@ -1,6 +1,6 @@
 # 🏢 내 손안의 맞춤형 임대주택 알리미 (hangbok_is_nearby)
 
-> **"행복주택은 늘 가까이에 있습니다."**  
+> **"행복은 늘 가까이에 있습니다."**  
 > 마이홈 포털에서 매일 신규 분양/임대주택 공고를 실시간 수집하고, **Gemini AI**를 활용해 사용자 프로필 기반의 청약 자격 요건을 자동으로 심사하여 텔레그램으로 알려주는 스마트 비서 서비스입니다.
 
 ---
@@ -8,36 +8,21 @@
 ## 🌟 핵심 기능
 
 1. **자동화된 맞춤 지역 수집 (1차 필터링)**
-   * 프로필 타겟에 맞춘 **서울/경기/인천** 거주 및 생활권 맞춤형 공고 필터링.
+   * 경기 광명시 거주, 서울 용산구 직장인 타겟에 맞춘 **서울/경기/인천** 거주 및 생활권 맞춤형 공고 필터링.
    * 공고 게재일과 상관없이 **접수 시작 당일 아침**에 사용자에게 안내하도록 날짜 매칭 설계.
 
-2. **단 1회 호출로 끝내는 벌크 통합 분석 (Bulk Analysis)**
-   * 오늘 접수를 시작하는 공고가 여러 건 존재할 때, 개별 공고마다 LLM API를 호출하는 대신 **모든 PDF 파일을 단 한 번의 Gemini API 요청으로 묶어서 전송**합니다.
-   * 일일 API 호출 횟수를 획기적으로 줄이고(N번 ➡️ 1번), 요청 한도 초과(429) 문제를 근본적으로 해결하며 분석 속도를 10배 이상 향상시켰습니다.
+2. **지능형 다중 모델 폴백 (Dynamic Fallback)**
+   * API 쿼터(429 한도 초과) 또는 특정 모델의 서버 순간 에러에 대응하여 가용한 후보 모델을 차례로 자동 스캔하여 분석을 완수합니다.
+   * 폴백 후보군 순서: `gemini-2.0-flash` ➡️ `gemini-flash-latest` (1.5 Flash) ➡️ `gemini-3.5-flash` ➡️ `gemini-2.5-flash`
 
-3. **철저한 자격(Hard) vs 순위(Soft) 분리 심사**
-   * 나이, 무주택, 소득, 자산 요건은 **필수 자격 요건(Hard Rules)**으로 엄격히 심사하여 미달 시 제외합니다.
-   * 거주지 및 직장 위치 요건은 **우선순위 요건(Soft Rules)**으로 분류하여, 1순위 지역이 아니더라도 수도권 거주자 자격으로 2~3순위 청약 신청이 가능하다면 탈락시키지 않고 적합(`Yes`)으로 판정해 상세 순위 정보를 함께 안내합니다.
+3. **고성능 PDF 인라인 심사 (2차 필터링)**
+   * 신규 발급된 API 키(`AQ.` 시작 규격)의 Google Discovery API 호환 오류 우회를 위해, 대용량 공고문 PDF 파일 바이트를 메모리에 로드해 직접 전송(Inline bytes)하여 정확하게 입주 적합도를 비교합니다.
+   * 나이(만 33세), 미혼 여부, 세대주 조건, 월평균 소득(연 5,000만 원, 월평균 약 416만 원), 거주/직장 위치 및 자산 요건 대조.
 
-4. **초안전 12단계 다중 모델 폴백 (12-Step Fallback)**
-   * API 쿼터 한도나 일시적 장애에 대응하여 고성능 Pro 모델부터 Flash/Lite 계열까지 **총 12개의 활성 멀티모달 모델**이 순차적으로 분석을 릴레이 시도합니다.
-   * **폴백 후보군 (최신/고성능 우선 순서):**
-     1. `gemini-3.1-pro-preview` (최고성능 3.1 Pro)
-     2. `gemini-3-pro-preview` (3.0 Pro)
-     3. `gemini-2.5-pro` (2.5 Pro)
-     4. `gemini-pro-latest` (1.5 Pro)
-     5. `gemini-3.5-flash` (최신 3.5 Flash)
-     6. `gemini-3.1-flash-lite` (3.1 Lite)
-     7. `gemini-3-flash-preview` (3.0 Preview)
-     8. `gemini-2.0-flash`
-     9. `gemini-2.0-flash-001`
-     10. `gemini-2.0-flash-lite`
-     11. `gemini-2.0-flash-lite-001`
-     12. `gemini-flash-latest` (1.5 Flash)
-
-5. **텔레그램 알림 단일 말풍선 결합 (Single Bubble Delivery)**
-   * 분석 텍스트와 탈락 사유 요약 PDF 보고서 파일이 대화방에 쪼개져서 오지 않고, **1개의 말풍선(캡션 형태)으로 묶여 깔끔하게 전송**됩니다.
-   * 텔레그램 API 캡션 글자 수 한계(1,024자)를 자동 연산하여 한도 초과 시에만 예외적으로 안전 분할 발송을 처리합니다.
+4. **깔끔한 통합 알림 딜리버리 (Single Telegram Bubble)**
+   * **적합 공고:** 텔레그램 메시지 본문에 자격 요건 분석 결과 및 바로가기 링크 노출.
+   * **부적합 공고:** 텔레그램 대화방을 어지럽히지 않도록 상세 탈락 사유(소득 초과, 연령 미달 등)를 깔끔하게 **1장의 PDF 파일로 합성하여 전송**.
+   * **통합 레이아웃:** 텔레그램 캡션 길이 한계(1024자) 분석을 거쳐 **텍스트 알림과 PDF 파일을 하나의 말풍선으로 묶어서** 깔끔하게 전송합니다.
 
 ---
 
@@ -48,7 +33,7 @@
   * `BeautifulSoup4` (MyHome HTML 파싱)
   * `google-generativeai` (Gemini LLM 활용 입주 자격 조건 검증)
   * `requests` (AJAX API 호출 및 PDF 다운로드, 텔레그램 API 통신)
-  * `reportlab` (한글 폰트가 적용된 자격 부적합 요약 PDF 리포트 빌드)
+  * `reportlab` (한글 폰트 적용된 자격 부적합 요약 PDF 리포트 빌드)
 * **Execution Environment:** GitHub Actions (Cron Scheduler)
 
 ---
@@ -59,12 +44,11 @@
 hangbok_is_nearby/
 ├── .github/
 │   └── workflows/
-│       └── housing_alert.yml  # GitHub Actions 서버리스 크론 스케줄러 (8:18 AM KST)
+│       └── housing_alert.yml  # GitHub Actions 서버리스 크론 스케줄러
 ├── .env.example               # 환경 변수 템플릿 파일
 ├── README.md                  # 본 설명서
-├── requirements.txt           # 프로젝트 의존성 관리 파일
 ├── get_chat_id.py             # 텔레그램 봇 채팅 ID 수집 툴
-├── main.py                    # 알리미 메인 파이프라인 엔진 (벌크 분석 및 12단 폴백 탑재)
+├── main.py                    # 알리미 메인 파이프라인 엔진
 └── run.sh                     # 로컬 실행 헬퍼 쉘 스크립트
 ```
 
@@ -79,7 +63,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # 의존성 패키지 설치
-pip install -r requirements.txt
+pip install -r requirements.txt  # 또는 pip install requests beautifulsoup4 google-generativeai reportlab
 ```
 
 ### 2. 환경 변수 설정
@@ -98,7 +82,7 @@ vi .env
 오늘 접수를 시작하는 공고가 없는 경우, 특정 날짜를 가정하고 모의 테스트를 해볼 수 있습니다.
 
 ```bash
-# 2026년 7월 20일 날짜를 가정하여 실행 (성남 금토지구 및 영구임대 포함 12건 벌크 분석 시뮬레이션)
+# 2026년 7월 20일 날짜를 가정하여 실행 (성남 금토지구 및 영구임대 포함 12건 분석 시뮬레이션)
 ./run.sh 2026-07-20
 
 # Gemini API 호출 없이 메시지/PDF UI 레이아웃만 테스트하고 싶은 경우
@@ -111,15 +95,42 @@ vi .env
 
 매일 아침 자동으로 공고를 수집하고 알림을 주기 위해 GitHub Actions의 서버리스 환경을 구성합니다.
 
-### 1. 워크플로우 작동 스케줄 (지연 우회 기법)
-GitHub Actions의 크론 스케줄러는 혼잡 시간대(정각, 30분 단위)에 심각한 실행 지연이 발생합니다. 이를 우회하기 위해 **오전 8시 18분 KST(23:18 UTC)**이라는 독자적인 홀수 분 스케줄링을 설정해 두었습니다.
+### 1. 워크플로우 파일 생성
+`.github/workflows/housing_alert.yml` 경로에 아래 설정 내용을 담아 생성합니다.
 
 ```yaml
+name: Daily Housing Announcement Alert
+
 on:
   schedule:
-    # 매일 아침 한국 시간(KST) 오전 8시 18분에 실행 (UTC 기준 전날 23:18)
-    # 정시 혼잡 시간대를 피해 대기 지연 없이 8시 30분 전 도착을 노립니다.
-    - cron: '18 23 * * *'
+    # 매일 아침 한국 시간(KST) 오전 8시 30분에 실행 (UTC 기준 전날 23:30)
+    - cron: '30 23 * * *'
+  workflow_dispatch: # 수동 실행 지원
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 google-generativeai reportlab
+
+      - name: Run Alert Service
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python main.py
 ```
 
 ### 2. GitHub 저장소 Secrets 등록
@@ -130,4 +141,4 @@ on:
    * `TELEGRAM_BOT_TOKEN` (텔레그램 봇 토큰)
    * `TELEGRAM_CHAT_ID` (내 텔레그램 채팅 ID)
 
-이후 매일 오전 8시 18분~30분 사이에 크론에 의해 스크립트가 실행되어 폰으로 알림이 전송됩니다.
+이후 매일 오전 8시 30분에 크론에 의해 스크립트가 실행되어 폰으로 알림이 전송됩니다.
