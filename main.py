@@ -231,7 +231,7 @@ def parse_application_start_dates(pblanc_id):
     
     start_dates = []
     try:
-        response = requests.get(detail_url, headers=headers, timeout=10)
+        response = requests.get(detail_url, headers=headers, timeout=30)
         if response.status_code != 200:
             return start_dates
             
@@ -420,7 +420,7 @@ def fetch_recent_notices(target_date):
         
         try:
             print(f"공고 목록 가져오는 중... (페이지 {page})")
-            response = requests.post(list_url, headers=headers, data=data, timeout=10)
+            response = requests.post(list_url, headers=headers, data=data, timeout=30)
             if response.status_code == 200:
                 json_data = response.json()
                 items = json_data.get('resultList', [])
