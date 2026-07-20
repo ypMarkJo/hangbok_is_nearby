@@ -33,5 +33,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MYHOME_CONNECT_TIMEOUT: "10"
+          MYHOME_READ_TIMEOUT: "30"
+          MYHOME_MAX_RETRIES: "3"
+          MYHOME_PAGE_RETRY_ATTEMPTS: "3"
+          MYHOME_RETRY_BACKOFF_SECONDS: "1.5"
         run: |
           python main.py
