@@ -2,8 +2,8 @@ name: Daily Housing Announcement Alert
 
 on:
   schedule:
-    # 매일 아침 한국 시간(KST) 오전 8시 30분에 실행 (UTC 기준 전날 23:30)
-    - cron: '30 23 * * *'
+    # 매일 아침 한국 시간(KST) 오전 8시 18분에 실행 (UTC 기준 전날 23:18)
+    - cron: '18 23 * * *'
   workflow_dispatch: # 수동 실행 지원
 
 jobs:
@@ -27,21 +27,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Network probe (myhome)
-        run: |
-          set -x
-          date
-          nslookup www.myhome.go.kr || true
-          curl -vI --connect-timeout 10 --max-time 30 \
-            https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do || true
-          curl -v --connect-timeout 10 --max-time 30 \
-            -H "User-Agent: Mozilla/5.0" \
-            -H "Referer: https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do" \
-            -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-            -H "X-Requested-With: XMLHttpRequest" \
-            --data "pageIndex=1&searchTyId=&srchSuplyTy=&srchHouseTy=&srchSuplyPrvuseAr=&srchBassMtRntchrg=&srchPrgrStts=1&lfstsTyAt=&srchPblancNm=&srchRcritPblancDeYearMtBegin=&srchRcritPblancDeYearMtEnd=" \
-            https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcList.do || true
 
       - name: Run Alert Service
         env:
