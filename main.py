@@ -9,6 +9,7 @@ import html
 import time
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+import base64
 
 # ReportLab PDF 생성 모듈 추가
 from reportlab.lib.pagesizes import letter
@@ -77,6 +78,27 @@ if not all([GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
     sys.exit(1)
 
 genai.configure(api_key=GEMINI_API_KEY)
+
+# 마이홈 릴레이 서버 설정 (GitHub Actions에서 사용)
+MYHOME_RELAY_URL = os.environ.get('MYHOME_RELAY_URL')  # e.g., http://woojoo720.dothome.co.kr/myhome_relay.php
+MYHOME_RELAY_KEY = os.environ.get('MYHOME_RELAY_KEY', 'hangbok_relay_2026')
+
+def myhome_request(action, params, timeout=15):
+    """마이홈 API 요청 - 릴레이 서버가 설정되어 있으면 릴레이를 통해, 아니면 직접 요청"""
+    if not MYHOME_RELAY_URL:
+        return None  # 릴레이 미설정 시 None 반환 → 기존 직접 호출 로직 사용
+    
+    try:
+        response = requests.post(MYHOME_RELAY_URL, json={
+            'api_key': MYHOME_RELAY_KEY,
+            'action': action,
+            'params': params
+        }, timeout=timeout)
+        response.raise_for_status()
+        return response
+    except Exception as e:
+        print(f"릴레이 요청 실패 ({action}): {e}")
+        return None
 
 # 사용자 프로필 설정
 USER_PROFILE = """
@@ -231,7 +253,13 @@ def parse_application_start_dates(pblanc_id):
     
     start_dates = []
     try:
-        response = requests.get(detail_url, headers=headers, timeout=10)
+        # 릴레이 서버를 통한 요청 시도
+        relay_resp = myhome_request('detail', {'pblancId': pblanc_id})
+        if relay_resp is not None:
+            response = relay_resp
+        else:
+            response = requests.get(detail_url, headers=headers, timeout=10)
+        
         if response.status_code != 200:
             return start_dates
             
@@ -420,7 +448,12 @@ def fetch_recent_notices(target_date):
         
         try:
             print(f"공고 목록 가져오는 중... (페이지 {page})")
-            response = requests.post(list_url, headers=headers, data=data, timeout=10)
+            # 릴레이 서버를 통한 요청 시도
+            relay_resp = myhome_request('list', data)
+            if relay_resp is not None:
+                response = relay_resp
+            else:
+                response = requests.post(list_url, headers=headers, data=data, timeout=10)
             if response.status_code == 200:
                 json_data = response.json()
                 items = json_data.get('resultList', [])
@@ -550,7 +583,21 @@ def main():
         
         try:
             print(f"[{pblanc_nm}] PDF 공고문 다운로드 중...")
-            response = requests.get(pdf_url, headers=headers, timeout=30)
+            # 릴레이 서버를 통한 PDF 다운로드 시도
+            relay_resp = myhome_request('pdf', {'atchFileId': atch_file_id}, timeout=60)
+            if relay_resp is not None:
+                relay_data = relay_resp.json()
+                if relay_data.get('status') == 'ok':
+                    pdf_bytes = base64.b64decode(relay_data['data'])
+                    # Create a mock response-like behavior
+                    class RelayResponse:
+                        status_code = 200
+                        content = pdf_bytes
+                    response = RelayResponse()
+                else:
+                    raise Exception(f"릴레이 PDF 다운로드 실패: {relay_data.get('error')}")
+            else:
+                response = requests.get(pdf_url, headers=headers, timeout=30)
             if response.status_code != 200 or not response.content.startswith(b"%PDF"):
                 eligible_list.append({
                     "title": pblanc_nm,
