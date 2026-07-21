@@ -49,6 +49,7 @@
   * `google-generativeai` (Gemini LLM 활용 입주 자격 조건 검증)
   * `requests` (AJAX API 호출 및 PDF 다운로드, 텔레그램 API 통신)
   * `reportlab` (한글 폰트가 적용된 자격 부적합 요약 PDF 리포트 빌드)
+* **Relay Server:** PHP (닷홈 무료 호스팅 기반 마이홈 API 중계 프록시)
 * **Execution Environment:** GitHub Actions (Cron Scheduler)
 
 ---
@@ -65,6 +66,7 @@ hangbok_is_nearby/
 ├── requirements.txt           # 프로젝트 의존성 관리 파일
 ├── get_chat_id.py             # 텔레그램 봇 채팅 ID 수집 툴
 ├── main.py                    # 알리미 메인 파이프라인 엔진 (벌크 분석 및 12단 폴백 탑재)
+├── myhome_relay.php           # 닷홈 배포용 마이홈 API 중계 스크립트
 └── run.sh                     # 로컬 실행 헬퍼 쉘 스크립트
 ```
 
@@ -93,6 +95,8 @@ vi .env
 * `GEMINI_API_KEY`: Google AI Studio에서 발급받은 API 키
 * `TELEGRAM_BOT_TOKEN`: 텔레그램 BotFather를 통해 발급받은 봇 토큰
 * `TELEGRAM_CHAT_ID`: 알림을 받을 사용자의 텔레그램 채팅방 ID (`get_chat_id.py` 실행을 통해 파악 가능)
+* `MYHOME_RELAY_URL`: 마이홈 릴레이 서버 URL (GitHub Actions 전용, 로컬에서는 불필요)
+* `MYHOME_RELAY_KEY`: 릴레이 서버 인증 키 (기본값: `hangbok_relay_2026`)
 
 ### 3. 테스트 모드 실행
 오늘 접수를 시작하는 공고가 없는 경우, 특정 날짜를 가정하고 모의 테스트를 해볼 수 있습니다.
@@ -123,11 +127,36 @@ on:
 ```
 
 ### 2. GitHub 저장소 Secrets 등록
-배포할 깃허브 레포지토리의 설정 창에 환경 변수 3종을 등록합니다.
+배포할 깃허브 레포지토리의 설정 창에 환경 변수 5종을 등록합니다.
 1. 대상 저장소의 **Settings** ➡️ **Secrets and variables** ➡️ **Actions**로 이동합니다.
 2. **New repository secret** 버튼을 눌러 아래 변수들을 저장합니다.
    * `GEMINI_API_KEY` (AI Studio API 키)
    * `TELEGRAM_BOT_TOKEN` (텔레그램 봇 토큰)
    * `TELEGRAM_CHAT_ID` (내 텔레그램 채팅 ID)
+   * `MYHOME_RELAY_URL` (릴레이 서버 주소, 예: `http://woojoo720.dothome.co.kr/myhome_relay.php`)
+   * `MYHOME_RELAY_KEY` (릴레이 인증 키)
 
 이후 매일 오전 8시 18분~30분 사이에 크론에 의해 스크립트가 실행되어 폰으로 알림이 전송됩니다.
+
+---
+
+## 🔀 릴레이 서버 아키텍처
+
+GitHub Actions는 해외(Azure) 서버에서 실행되므로 마이홈 포털(`myhome.go.kr`)이 해외 IP를 차단합니다. 이를 우회하기 위해 **국내 호스팅(닷홈) 서버를 중계 프록시**로 활용합니다.
+
+```text
+[GitHub Actions] ──→ [닷홈 릴레이 서버] ──→ [myhome.go.kr]
+   (해외 IP)          (국내 IP ✅)           (공고 데이터)
+       │
+       └──→ [Gemini API / Telegram API]  ← 직접 호출 (릴레이 미경유)
+```
+
+* **마이홈 요청만** 릴레이를 경유하며, Gemini AI 분석 및 텔레그램 알림은 직접 호출하여 트래픽을 절약합니다.
+* 릴레이 서버 미설정 시(`MYHOME_RELAY_URL` 없음) 기존과 동일하게 직접 호출하므로, 로컬 개발 환경에는 영향이 없습니다.
+
+### 릴레이 서버 배포 방법
+1. 닷홈 무료 호스팅 가입 후 FTP로 `myhome_relay.php` 업로드:
+   ```bash
+   curl -T myhome_relay.php ftp://계정명.dothome.co.kr/html/myhome_relay.php --user 계정명
+   ```
+2. 브라우저에서 `http://계정명.dothome.co.kr/myhome_relay.php` 접속 시 `{"error": "Invalid JSON input"}` 응답이 나오면 정상 배포 완료.
