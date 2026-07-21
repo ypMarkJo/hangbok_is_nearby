@@ -299,120 +299,136 @@ def analyze_eligibility_bulk(notices_to_analyze):
     if not notices_to_analyze:
         return []
         
-    try:
-        # 1. 콘텐츠 리스트 구성 (PDF 바이트들을 인라인 데이터로 순서대로 추가)
-        contents = []
-        for pblanc_nm, pdf_bytes, pblanc_id, _ in notices_to_analyze:
-            contents.append({
-                'mime_type': 'application/pdf',
-                'data': pdf_bytes
-            })
+    all_bulk_results = []
+    chunk_size = 5 # 토큰 초과(1M) 방지를 위해 5개 단위로 묶어서 처리
+    
+    chunks = [notices_to_analyze[i:i + chunk_size] for i in range(0, len(notices_to_analyze), chunk_size)]
+    
+    for chunk_idx, chunk in enumerate(chunks):
+        try:
+            # 1. 콘텐츠 리스트 구성 (PDF 바이트들을 인라인 데이터로 순서대로 추가)
+            contents = []
+            for pblanc_nm, pdf_bytes, pblanc_id, _ in chunk:
+                contents.append({
+                    'mime_type': 'application/pdf',
+                    'data': pdf_bytes
+                })
+                
+            # 각 PDF 인덱스를 식별하기 위한 매핑 목록 문자열 생성
+            notices_index_str = "\n".join([
+                f"[{idx+1}] {item[0]} (ID: {item[2]})"
+                for idx, item in enumerate(chunk)
+            ])
             
-        # 각 PDF 인덱스를 식별하기 위한 매핑 목록 문자열 생성
-        notices_index_str = "\n".join([
-            f"[{idx+1}] {item[0]} (ID: {item[2]})"
-            for idx, item in enumerate(notices_to_analyze)
-        ])
-        
-        # 2. 벌크 전송용 단일 통합 프롬프트 작성
-        prompt = f"""
-        당신은 대한민국 공공임대주택 자격 요건 분석 전문가입니다.
-        제공된 {len(notices_to_analyze)}개의 청약 모집공고문 PDF 파일들(순서대로 전달됨)과 아래의 '신청자 정보'를 면밀히 비교하여 각 공고별 신청 가능 여부를 평가해 주세요.
+            # 2. 벌크 전송용 단일 통합 프롬프트 작성
+            prompt = f"""
+            당신은 대한민국 공공임대주택 자격 요건 분석 전문가입니다.
+            제공된 {len(chunk)}개의 청약 모집공고문 PDF 파일들(순서대로 전달됨)과 아래의 '신청자 정보'를 면밀히 비교하여 각 공고별 신청 가능 여부를 평가해 주세요.
 
-        [신청자 정보]
-        {USER_PROFILE}
+            [신청자 정보]
+            {USER_PROFILE}
 
-        [분석 대상 공고 목록 (순서 매칭)]
-        {notices_index_str}
+            [분석 대상 공고 목록 (순서 매칭)]
+            {notices_index_str}
 
-        [요구 조건 및 심사 지침 (중요)]
-        1. **자격 요건 (Hard Rules - 필수 자격)**
-           - 나이(만 33세), 무주택 여부, 미혼 요건, 자산 기준, 소득 한도 기준은 신청 가능 여부를 결정하는 필수 자격 요건(Hard Rules)입니다.
-           - 이 필수 자격 조건 중 하나라도 탈락(예: 1인 가구 소득 한도를 명백히 초과하거나 나이 제한을 넘어섬)하는 경우에만 `"eligible": "No"`로 판정하십시오.
-        
-        2. **순위 요건 (Soft Rules - 거주지/직장 위치에 따른 우선순위)**
-           - 해당 주택이 건설되는 시/군에 거주하지 않더라도(예: 성남시 공고인데 신청자는 광명시 거주/용산구 직장인인 경우), 대한민국 수도권 거주자 자격으로 **2순위 또는 3순위 등으로 신청이 가능하다면 절대 `"eligible": "No"`로 판정하지 마십시오.**
-           - 1순위 조건에 부합하지 않더라도 2순위, 3순위로 청약 접수 자체가 가능한 경우 `"eligible": "Yes"`로 판정하고, 설명란(reason)에 "1순위 지역 요건은 미달하나, 수도권 거주자 자격으로 3순위 신청이 가능합니다."라고 상세히 명시해 주십시오.
-           - 거주지나 직장 위치가 공고의 우선순위 지역과 맞지 않다는 이유만으로 신청이 불가능한 것으로 분류하지 않도록 각별히 유의하십시오.
-
-        [출력 형식]
-        반드시 다음 구조의 JSON 리스트 형식으로만 답변을 제공해 주세요. 다른 설명이나 텍스트는 포함하지 마십시오.
-        [
-          {{
-            "title": "공고명",
-            "eligible": "Yes" 또는 "No" 또는 "Unsure",
-            "housing_type": "행복주택/국민임대/청년안심주택 등 파악된 주택 유형",
-            "reason": "신청 가능 여부에 대한 구체적인 분석 사유 (한국어로 서술. 필수 자격 요건 대조 결과 및 순위/우선순위 대조 결과 포함)"
-          }},
-          ...
-        ]
-        """
-        contents.append(prompt)
-        
-        # 사용 가능한 폴백 모델 목록 순서대로 정의
-        candidate_models = [
-            # 1. 최상위 추론 성능 Pro 계열 (최신 순서)
-            'gemini-3.1-pro-preview',
-            'gemini-3-pro-preview',
-            'gemini-2.5-pro',
-            'gemini-pro-latest',
+            [요구 조건 및 심사 지침 (중요)]
+            1. **자격 요건 (Hard Rules - 필수 자격)**
+               - 나이(만 33세), 무주택 여부, 미혼 요건, 자산 기준, 소득 한도 기준은 신청 가능 여부를 결정하는 필수 자격 요건(Hard Rules)입니다.
+               - 이 필수 자격 조건 중 하나라도 탈락(예: 1인 가구 소득 한도를 명백히 초과하거나 나이 제한을 넘어섬)하는 경우에만 `"eligible": "No"`로 판정하십시오.
             
-            # 2. 보급형 Flash & Lite 계열 (최신 순서)
-            'gemini-3.5-flash',
-            'gemini-3.1-flash-lite',
-            'gemini-3-flash-preview',
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-001',
-            'gemini-2.0-flash-lite',
-            'gemini-2.0-flash-lite-001',
-            'gemini-flash-latest'
-        ]
-        
-        last_exception = None
-        
-        for model_name in candidate_models:
-            try:
-                print(f"\n총 {len(notices_to_analyze)}건의 공고에 대해 {model_name} 모델로 통합 분석 시도 중...")
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(
-                    contents,
-                    generation_config={"response_mime_type": "application/json"}
-                )
+            2. **순위 요건 (Soft Rules - 거주지/직장 위치에 따른 우선순위)**
+               - 해당 주택이 건설되는 시/군에 거주하지 않더라도(예: 성남시 공고인데 신청자는 광명시 거주/용산구 직장인인 경우), 대한민국 수도권 거주자 자격으로 **2순위 또는 3순위 등으로 신청이 가능하다면 절대 `"eligible": "No"`로 판정하지 마십시오.**
+               - 1순위 조건에 부합하지 않더라도 2순위, 3순위로 청약 접수 자체가 가능한 경우 `"eligible": "Yes"`로 판정하고, 설명란(reason)에 "1순위 지역 요건은 미달하나, 수도권 거주자 자격으로 3순위 신청이 가능합니다."라고 상세히 명시해 주십시오.
+               - 거주지나 직장 위치가 공고의 우선순위 지역과 맞지 않다는 이유만으로 신청이 불가능한 것으로 분류하지 않도록 각별히 유의하십시오.
+
+            [출력 형식]
+            반드시 다음 구조의 JSON 리스트 형식으로만 답변을 제공해 주세요. 다른 설명이나 텍스트는 포함하지 마십시오.
+            [
+              {{
+                "title": "공고명",
+                "eligible": "Yes" 또는 "No" 또는 "Unsure",
+                "housing_type": "행복주택/국민임대/청년안심주택 등 파악된 주택 유형",
+                "reason": "신청 가능 여부에 대한 구체적인 분석 사유 (한국어로 서술. 필수 자격 요건 대조 결과 및 순위/우선순위 대조 결과 포함)"
+              }},
+              ...
+            ]
+            """
+            contents.append(prompt)
+            
+            # 사용 가능한 폴백 모델 목록 순서대로 정의
+            candidate_models = [
+                # 1. 최상위 추론 성능 Pro 계열 (최신 순서)
+                'gemini-3.1-pro-preview',
+                'gemini-3-pro-preview',
+                'gemini-2.5-pro',
+                'gemini-pro-latest',
                 
-                # 3. 결과 파싱 (마크다운 코드 블록 펜스가 포함되어 있을 경우 정제)
-                raw_text = response.text.strip()
-                if raw_text.startswith("```"):
-                    first_newline = raw_text.find("\n")
-                    if first_newline != -1:
-                        raw_text = raw_text[first_newline:].strip()
-                    if raw_text.endswith("```"):
-                        raw_text = raw_text[:-3].strip()
-                        
-                result = json.loads(raw_text)
-                print(f"[{model_name}] 모델 통합 벌크 분석 성공!")
-                return result
+                # 2. 보급형 Flash & Lite 계열 (최신 순서)
+                'gemini-3.5-flash',
+                'gemini-3.1-flash-lite',
+                'gemini-3-flash-preview',
+                'gemini-2.0-flash',
+                'gemini-2.0-flash-001',
+                'gemini-2.0-flash-lite',
+                'gemini-2.0-flash-lite-001',
+                'gemini-flash-latest'
+            ]
+            
+            last_exception = None
+            chunk_success = False
+            
+            for model_name in candidate_models:
+                try:
+                    print(f"\n[Chunk {chunk_idx+1}/{len(chunks)}] {len(chunk)}건의 공고에 대해 {model_name} 모델로 통합 분석 시도 중...")
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(
+                        contents,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    
+                    # 3. 결과 파싱 (마크다운 코드 블록 펜스가 포함되어 있을 경우 정제)
+                    raw_text = response.text.strip()
+                    if raw_text.startswith("```"):
+                        first_newline = raw_text.find("\n")
+                        if first_newline != -1:
+                            raw_text = raw_text[first_newline:].strip()
+                        if raw_text.endswith("```"):
+                            raw_text = raw_text[:-3].strip()
+                            
+                    result = json.loads(raw_text)
+                    print(f"[{model_name}] 모델 Chunk {chunk_idx+1} 벌크 분석 성공!")
+                    all_bulk_results.extend(result)
+                    chunk_success = True
+                    break
+                    
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"{model_name} 분석 오류: {err_str[:120]}")
+                    last_exception = e
+                    # 429 등의 에러 발생 시 다음 후보 모델로 폴백
+                    continue
+                    
+            if not chunk_success:
+                print(f"❌ Chunk {chunk_idx+1} 분석 실패. (최종 에러: {last_exception})")
+                for pblanc_nm, _, pblanc_id, suply_ty_nm in chunk:
+                    all_bulk_results.append({
+                        "title": pblanc_nm,
+                        "eligible": "Unsure",
+                        "housing_type": suply_ty_nm,
+                        "reason": f"통합 분석 중 쿼터 초과 또는 API 오류 발생으로 수동 확인이 필요합니다. (최종 에러 내용: {last_exception})"
+                    })
+                    
+        except Exception as e:
+            print(f"Gemini 벌크 분석 Chunk {chunk_idx+1} 최종 실패: {e}")
+            for pblanc_nm, _, pblanc_id, suply_ty_nm in chunk:
+                all_bulk_results.append({
+                    "title": pblanc_nm,
+                    "eligible": "Unsure",
+                    "housing_type": suply_ty_nm,
+                    "reason": f"통합 분석 중 예기치 못한 오류 발생. (최종 에러 내용: {e})"
+                })
                 
-            except Exception as e:
-                err_str = str(e)
-                print(f"{model_name} 분석 오류: {err_str[:120]}")
-                last_exception = e
-                # 429 등의 에러 발생 시 다음 후보 모델로 폴백
-                continue
-                
-        raise last_exception if last_exception else Exception("모든 후보 모델의 통합 호출에 실패했습니다.")
-        
-    except Exception as e:
-        print(f"Gemini 벌크 분석 최종 실패: {e}")
-        # 전체 실패 시 수동 확인을 위한 기본 구조 목록 반환
-        fallback_results = []
-        for pblanc_nm, _, pblanc_id, suply_ty_nm in notices_to_analyze:
-            fallback_results.append({
-                "title": pblanc_nm,
-                "eligible": "Unsure",
-                "housing_type": suply_ty_nm,
-                "reason": f"통합 분석 중 쿼터 초과 또는 API 오류 발생으로 수동 확인이 필요합니다. (최종 에러 내용: {e})"
-            })
-        return fallback_results
+    return all_bulk_results
 
 def fetch_recent_notices(target_date):
     """최근 신규 공고 목록 조회 (공고일이 target_date 기준 25일 이내인 것들만 동적 수집)"""
