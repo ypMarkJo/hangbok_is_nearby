@@ -8,7 +8,7 @@
 
 // Enable CORS headers for cross-origin requests
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 
 // Handle preflight OPTIONS request
@@ -22,11 +22,21 @@ define('DEFAULT_API_KEY', 'hangbok_relay_2026');
 
 // Read JSON payload from input stream
 $raw_input = file_get_contents('php://input');
+
+// Handle GET request in browser (health check)
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && empty($raw_input)) {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'status' => 'ok',
+        'message' => 'MyHome Relay Server is running'
+    ]);
+    exit;
+}
+
 $data = json_decode($raw_input, true);
 
 if (!is_array($data)) {
     header('Content-Type: application/json');
-    http_response_code(400);
     echo json_encode(['error' => 'Invalid JSON input']);
     exit;
 }
@@ -35,7 +45,6 @@ if (!is_array($data)) {
 $provided_key = isset($data['api_key']) ? (string)$data['api_key'] : '';
 if (!hash_equals(DEFAULT_API_KEY, $provided_key)) {
     header('Content-Type: application/json');
-    http_response_code(401);
     echo json_encode(['error' => 'unauthorized']);
     exit;
 }
@@ -58,7 +67,8 @@ switch ($action) {
             CURLOPT_POSTFIELDS => $post_data,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 15,
-            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8',
                 'Referer: https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcView.do',
@@ -74,7 +84,6 @@ switch ($action) {
 
         if ($response === false || $http_code >= 400) {
             header('Content-Type: application/json');
-            http_response_code(502);
             echo json_encode(['error' => $err ? $err : "HTTP status code " . $http_code]);
             exit;
         }
@@ -88,7 +97,6 @@ switch ($action) {
         $pblanc_id = isset($params['pblancId']) ? $params['pblancId'] : '';
         if (empty($pblanc_id)) {
             header('Content-Type: application/json');
-            http_response_code(400);
             echo json_encode(['error' => 'Missing required parameter: pblancId']);
             exit;
         }
@@ -100,7 +108,8 @@ switch ($action) {
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 15,
-            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_HTTPHEADER => [
                 'User-Agent: ' . $user_agent
             ]
@@ -113,7 +122,6 @@ switch ($action) {
 
         if ($response === false || $http_code >= 400) {
             header('Content-Type: application/json');
-            http_response_code(502);
             echo json_encode(['error' => $err ? $err : "HTTP status code " . $http_code]);
             exit;
         }
@@ -129,7 +137,6 @@ switch ($action) {
 
         if (empty($atch_file_id)) {
             header('Content-Type: application/json');
-            http_response_code(400);
             echo json_encode(['error' => 'Missing required parameter: atchFileId']);
             exit;
         }
@@ -141,7 +148,8 @@ switch ($action) {
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
-            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_HTTPHEADER => [
                 'User-Agent: ' . $user_agent
             ]
@@ -154,7 +162,6 @@ switch ($action) {
 
         if ($response === false || $http_code >= 400) {
             header('Content-Type: application/json');
-            http_response_code(502);
             echo json_encode(['error' => $err ? $err : "HTTP status code " . $http_code]);
             exit;
         }
@@ -169,7 +176,6 @@ switch ($action) {
 
     default:
         header('Content-Type: application/json');
-        http_response_code(400);
         echo json_encode(['error' => 'invalid action']);
         break;
 }
