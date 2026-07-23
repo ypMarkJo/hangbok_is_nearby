@@ -245,13 +245,13 @@ def generate_ineligible_pdf(ineligible_list, today_str, pdf_path):
     doc.build(story)
 
 def parse_application_start_dates(pblanc_id):
-    """상세 페이지에서 접수 일정 시작일을 추출"""
+    """상세 페이지에서 접수 일정 시작일을 다각도로 추출"""
     detail_url = f"https://www.myhome.go.kr/hws/portal/sch/selectRsdtRcritNtcDetailView.do?pblancId={pblanc_id}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    start_dates = []
+    start_dates = set()
     try:
         # 릴레이 서버를 통한 요청 시도
         relay_resp = myhome_request('detail', {'pblancId': pblanc_id})
@@ -261,35 +261,42 @@ def parse_application_start_dates(pblanc_id):
             response = requests.get(detail_url, headers=headers, timeout=10)
         
         if response.status_code != 200:
-            return start_dates
+            return list(start_dates)
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        th = soup.find(lambda tag: tag.name == 'th' and '접수 일정' in tag.get_text())
-        if th:
+        
+        # 날짜 정규식 패턴 (YYYY년 MM월 DD일, YYYY.MM.DD, YYYY-MM-DD 등)
+        date_pattern = r'(\d{4})[년\.\-]\s*(\d{1,2})[월\.\-]\s*(\d{1,2})'
+
+        # 1차: 테이블 헤더(th)에 '일정', '접수', '기간', '신청' 키워드가 있는 항목 전수 조사
+        schedule_ths = soup.find_all(lambda tag: tag.name == 'th' and any(k in tag.get_text() for k in ['일정', '접수', '기간', '신청']))
+        
+        for th in schedule_ths:
+            th_text = th.get_text().strip()
+            # '안내', '당첨자' 관련 문구는 제외
+            if any(skip in th_text for skip in ['안내', '당첨자', '발표']):
+                continue
+                
             td = th.find_next_sibling('td')
             if td:
-                # 공백 및 줄바꿈 정규화
                 text = re.sub(r'\s+', ' ', td.get_text()).strip()
-                
-                # 'YYYY년 MM월 DD일 ~ YYYY년 MM월 DD일' 패턴 검색
-                pattern = r'(\d{4}년\s*\d{2}월\s*\d{2}일)\s*~\s*(\d{4}년\s*\d{2}월\s*\d{2}일)'
-                ranges = re.findall(pattern, text)
-                
-                if ranges:
-                    for r in ranges:
-                        start_str = r[0]
-                        m = re.search(r'(\d{4})년\s*(\d{2})월\s*(\d{2})일', start_str)
-                        if m:
-                            start_dates.append(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
-                else:
-                    # 단일 날짜 포맷이 있는 경우 검색
-                    m = re.search(r'(\d{4})년\s*(\d{2})월\s*(\d{2})일', text)
-                    if m:
-                        start_dates.append(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+                matches = re.findall(date_pattern, text)
+                for y, m, d in matches:
+                    start_dates.add(f"{int(y):04d}-{int(m):02d}-{int(d):02d}")
+                    
+        # 2차: th에서 못 찾은 경우 전체 테이블(table)의 td 셀 중 접수 일정 패턴 탐색 (백업)
+        if not start_dates:
+            for td in soup.find_all('td'):
+                text = re.sub(r'\s+', ' ', td.get_text()).strip()
+                if any(k in text for k in ['순위', '접수', '신청']):
+                    matches = re.findall(date_pattern, text)
+                    for y, m, d in matches:
+                        start_dates.add(f"{int(y):04d}-{int(m):02d}-{int(d):02d}")
+
     except Exception as e:
         print(f"상세 페이지 파싱 오류 (ID: {pblanc_id}): {e}")
         
-    return start_dates
+    return list(start_dates)
 
 def analyze_eligibility_bulk(notices_to_analyze):
     """
